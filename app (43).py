@@ -12,9 +12,6 @@ FONT_SIZE_HEBREW = 13
 FONT_SIZE_ENGLISH = 11
 FONT_SIZE_SPACING = 11
 BULLET_CHAR = "-"
-PAGE_WIDTH = Inches(8.27)
-PAGE_HEIGHT = Inches(11.69)
-MARGIN = Inches(1)
 
 def is_hebrew(text):
     for ch in text:
@@ -22,61 +19,55 @@ def is_hebrew(text):
             return True
     return False
 
-def ensure_rpr(run):
-    rPr = run._element.find(qn('w:rPr'))
-    if rPr is None:
-        rPr = OxmlElement('w:rPr')
-        run._element.insert(0, rPr)
-    return rPr
+def is_numbered_paragraph(para):
+    """בדוק אם זו רשימה ממוספרת (לא להמיר)"""
+    numPr = para._element.find('.//' + qn('w:numPr'))
+    if numPr is None:
+        return False
+    numId = numPr.find(qn('w:numId'))
+    ilvl = numPr.find(qn('w:ilvl'))
+    if numId is None:
+        return False
+    try:
+        numId_val = numId.get(qn('w:val'))
+        ilvl_val = ilvl.get(qn('w:val'), '0') if ilvl is not None else '0'
+        numbering = para.part.numbering_part._element
+        # מצא את ה-abstractNumId מתוך numId
+        for num in numbering.findall(qn('w:num')):
+            if num.get(qn('w:numId')) == numId_val:
+                abstractNumId = num.find(qn('w:abstractNumId'))
+                if abstractNumId is None:
+                    break
+                absId = abstractNumId.get(qn('w:val'))
+                for absNum in numbering.findall(qn('w:abstractNum')):
+                    if absNum.get(qn('w:abstractNumId')) == absId:
+                        for lvl in absNum.findall(qn('w:lvl')):
+                            if lvl.get(qn('w:ilvl')) == ilvl_val:
+                                numFmt = lvl.find(qn('w:numFmt'))
+                                if numFmt is not None:
+                                    fmt = numFmt.get(qn('w:val'), '')
+                                    if fmt not in ('bullet',):
+                                        return True
+    except Exception:
+        pass
+    return False
 
-def set_run_font(run, text):
-    rPr = ensure_rpr(run)
-    rFonts = rPr.find(qn('w:rFonts'))
-    if rFonts is None:
-        rFonts = OxmlElement('w:rFonts')
-        rPr.insert(0, rFonts)
-    if is_hebrew(text):
-        rFonts.set(qn('w:ascii'), FONT_HEBREW)
-        rFonts.set(qn('w:hAnsi'), FONT_HEBREW)
-        rFonts.set(qn('w:cs'), FONT_HEBREW)
-        sz_val = FONT_SIZE_HEBREW * 2
-    else:
-        rFonts.set(qn('w:ascii'), FONT_ENGLISH)
-        rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
-        rFonts.set(qn('w:cs'), FONT_ENGLISH)
-        sz_val = FONT_SIZE_ENGLISH * 2
-    for tag_name in ['w:sz', 'w:szCs']:
-        el = rPr.find(qn(tag_name))
-        if el is None:
-            el = OxmlElement(tag_name)
-            rPr.append(el)
-        el.set(qn('w:val'), str(sz_val))
+def is_bullet_paragraph(para):
+    if is_numbered_paragraph(para):
+        return False  # מספרים — לא להמיר
+    if para._element.find('.//' + qn('w:numPr')) is not None:
+        return True
+    if para.style and para.style.name and 'List' in para.style.name:
+        return True
+    return False
 
-def get_or_create_pPr(para):
-    pPr = para._element.find(qn('w:pPr'))
+def make_paragraph(new_doc, in_table=False):
+    p = new_doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER if in_table else WD_ALIGN_PARAGRAPH.RIGHT
+    pPr = p._element.find(qn('w:pPr'))
     if pPr is None:
         pPr = OxmlElement('w:pPr')
-        para._element.insert(0, pPr)
-    return pPr
-
-def set_paragraph_rtl(para, in_table=False):
-    pPr = get_or_create_pPr(para)
-    # הסר bidi ו-jc קיימים
-    for tag in [qn('w:jc'), qn('w:bidi')]:
-        el = pPr.find(tag)
-        if el is not None:
-            pPr.remove(el)
-    # הוסף bidi
-    bidi = OxmlElement('w:bidi')
-    bidi.set(qn('w:val'), '1')
-    pPr.append(bidi)
-    # הוסף jc
-    jc = OxmlElement('w:jc')
-    jc.set(qn('w:val'), 'center' if in_table else 'right')
-    pPr.append(jc)
-
-def set_paragraph_spacing(para):
-    pPr = get_or_create_pPr(para)
+        p._element.insert(0, pPr)
     spacing = pPr.find(qn('w:spacing'))
     if spacing is None:
         spacing = OxmlElement('w:spacing')
@@ -85,183 +76,167 @@ def set_paragraph_spacing(para):
     spacing.set(qn('w:lineRule'), 'auto')
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
+    return p
 
-def set_all_styles_rtl(doc):
-    """קבע jc=right על כל הסגנונות במסמך כדי שלא ידרסו את הפסקאות"""
-    styles_elem = doc.element.find(qn('w:styles'))
-    if styles_elem is None:
-        return
-    for style in styles_elem.findall(qn('w:style')):
-        pPr = style.find(qn('w:pPr'))
-        if pPr is None:
-            pPr = OxmlElement('w:pPr')
-            style.append(pPr)
-        # עדכן bidi ו-jc בכל סגנון
-        for tag in [qn('w:jc'), qn('w:bidi')]:
-            el = pPr.find(tag)
-            if el is not None:
-                pPr.remove(el)
-        bidi = OxmlElement('w:bidi')
-        bidi.set(qn('w:val'), '1')
-        pPr.append(bidi)
-        jc = OxmlElement('w:jc')
-        jc.set(qn('w:val'), 'right')
-        pPr.append(jc)
-        # עדכן גם rPr של הסגנון לפונט David 13
-        rPr = style.find(qn('w:rPr'))
-        if rPr is None:
-            rPr = OxmlElement('w:rPr')
-            style.append(rPr)
-        for tag in [qn('w:sz'), qn('w:szCs'), qn('w:rFonts')]:
-            el = rPr.find(tag)
-            if el is not None:
-                rPr.remove(el)
+def set_run_font(run, text, size_pt):
+    """קבע פונט כולל cs (עברית) כדי למנוע Cambria"""
+    from docx.oxml import OxmlElement
+    rPr = run._element.find(qn('w:rPr'))
+    if rPr is None:
+        rPr = OxmlElement('w:rPr')
+        run._element.insert(0, rPr)
+    rFonts = rPr.find(qn('w:rFonts'))
+    if rFonts is None:
         rFonts = OxmlElement('w:rFonts')
-        rFonts.set(qn('w:ascii'), FONT_HEBREW)
-        rFonts.set(qn('w:hAnsi'), FONT_HEBREW)
-        rFonts.set(qn('w:cs'), FONT_HEBREW)
         rPr.insert(0, rFonts)
-        sz = OxmlElement('w:sz')
-        sz.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
-        rPr.append(sz)
-        szCs = OxmlElement('w:szCs')
-        szCs.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
-        rPr.append(szCs)
+    font_name = FONT_HEBREW if is_hebrew(text) else FONT_ENGLISH
+    rFonts.set(qn('w:ascii'), font_name)
+    rFonts.set(qn('w:hAnsi'), font_name)
+    rFonts.set(qn('w:cs'), font_name)  # חשוב לעברית!
+    # גודל
+    sz_val = str(size_pt * 2)
+    for tag in ['w:sz', 'w:szCs']:
+        el = rPr.find(qn(tag))
+        if el is None:
+            el = OxmlElement(tag)
+            rPr.append(el)
+        el.set(qn('w:val'), sz_val)
 
-def is_bullet_paragraph(para):
-    if para._element.find('.//' + qn('w:numPr')) is not None:
-        return True
-    if para.style and para.style.name and 'List' in para.style.name:
-        return True
-    return False
+def add_run(p, text, bold=False, italic=False, underline=False):
+    run = p.add_run(text)
+    size = FONT_SIZE_HEBREW if is_hebrew(text) else FONT_SIZE_ENGLISH
+    set_run_font(run, text, size)
+    if bold: run.bold = True
+    if italic: run.italic = True
+    if underline: run.underline = True
+    return run
 
-def convert_bullet_to_dash(para):
-    pPr = get_or_create_pPr(para)
-    for tag in [qn('w:numPr'), qn('w:ind')]:
-        el = pPr.find(tag)
-        if el is not None:
-            pPr.remove(el)
-    runs_props = [{'bold': r.bold, 'italic': r.italic, 'underline': r.underline} for r in para.runs]
-    full_text = "".join([r.text for r in para.runs]).lstrip('•·-– \t')
-    for run in para.runs:
-        run.text = ""
-    if para.runs:
-        first_run = para.runs[0]
-        first_run.text = f"{BULLET_CHAR} {full_text}"
-        props = runs_props[0] if runs_props else {}
-        if props.get('bold'): first_run.bold = True
-        if props.get('italic'): first_run.italic = True
-        if props.get('underline'): first_run.underline = True
-        set_run_font(first_run, full_text)
-    else:
-        new_run = para.add_run(f"{BULLET_CHAR} {full_text}")
-        set_run_font(new_run, full_text)
-    set_paragraph_rtl(para, in_table=False)
-
-def process_runs_in_paragraph(para):
-    for run in para.runs:
-        if not run.text.strip():
-            continue
-        bold, italic, underline = run.bold, run.italic, run.underline
-        set_run_font(run, run.text)
-        if bold: run.bold = True
-        if italic: run.italic = True
-        if underline: run.underline = True
-
-def create_spacing_paragraph(doc):
-    p = OxmlElement('w:p')
-    pPr = OxmlElement('w:pPr')
-    rPr_para = OxmlElement('w:rPr')
-    rFonts = OxmlElement('w:rFonts')
-    rFonts.set(qn('w:ascii'), FONT_HEBREW)
-    rFonts.set(qn('w:hAnsi'), FONT_HEBREW)
-    rFonts.set(qn('w:cs'), FONT_HEBREW)
-    rPr_para.append(rFonts)
-    for tag_name, val in [('w:sz', FONT_SIZE_SPACING * 2), ('w:szCs', FONT_SIZE_SPACING * 2)]:
-        el = OxmlElement(tag_name)
-        el.set(qn('w:val'), str(val))
-        rPr_para.append(el)
-    pPr.append(rPr_para)
+def add_spacing(new_doc):
+    p = new_doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    pPr = p._element.find(qn('w:pPr'))
+    if pPr is None:
+        pPr = OxmlElement('w:pPr')
+        p._element.insert(0, pPr)
     spacing = OxmlElement('w:spacing')
     spacing.set(qn('w:line'), '240')
     spacing.set(qn('w:lineRule'), 'auto')
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
     pPr.append(spacing)
-    bidi = OxmlElement('w:bidi')
-    bidi.set(qn('w:val'), '1')
-    pPr.append(bidi)
-    jc = OxmlElement('w:jc')
-    jc.set(qn('w:val'), 'right')
-    pPr.append(jc)
-    p.append(pPr)
-    return p
+    run = p.add_run('‏')  # RLM תו כיוון
+    set_run_font(run, 'א', FONT_SIZE_SPACING)
 
 def process_document(input_bytes):
-    doc = Document(io.BytesIO(input_bytes))
+    old_doc = Document(io.BytesIO(input_bytes))
+    new_doc = Document()
 
-    # קבע RTL על כל הסגנונות — זה מונע דריסה
-    set_all_styles_rtl(doc)
+    # העתק numbering definitions מהמסמך הישן לחדש
+    try:
+        import copy
+        old_numbering = old_doc.part.numbering_part._element
+        new_numbering = new_doc.part.numbering_part._element
+        # מחק את כל ה-abstractNum ו-num הקיימים
+        for tag in [qn('w:abstractNum'), qn('w:num')]:
+            for el in new_numbering.findall(tag):
+                new_numbering.remove(el)
+        # העתק מהישן ושנה יישור מספרים לימין
+        for tag in [qn('w:abstractNum'), qn('w:num')]:
+            for el in old_numbering.findall(tag):
+                el_copy = copy.deepcopy(el)
+                # שנה lvlJc ל-right
+                for lvlJc in el_copy.findall('.//' + qn('w:lvlJc')):
+                    lvlJc.set(qn('w:val'), 'right')
+                # שנה ind - הזז מספרים לימין
+                for ind in el_copy.findall('.//' + qn('w:ind')):
+                    ind.set(qn('w:right'), ind.get(qn('w:left'), '720'))
+                    ind.attrib.pop(qn('w:left'), None)
+                    ind.attrib.pop(qn('w:hanging'), None)
+                new_numbering.append(el_copy)
+    except Exception:
+        pass
 
-    for section in doc.sections:
-        section.page_width = PAGE_WIDTH
-        section.page_height = PAGE_HEIGHT
-        section.left_margin = MARGIN
-        section.right_margin = MARGIN
-        section.top_margin = MARGIN
-        section.bottom_margin = MARGIN
+    for section in new_doc.sections:
+        section.page_width = Inches(8.27)
+        section.page_height = Inches(11.69)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
 
-    body = doc.element.body
-    new_body_elements = []
+    # הסר פסקה ריקה ראשונה
+    for p in new_doc.paragraphs:
+        p._element.getparent().remove(p._element)
 
-    for elem in list(body):
+    last_was_content = False
+    last_was_numbered = False
+    num_counters = {}  # מונה לכל numId
+
+    for elem in list(old_doc.element.body):
         tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
 
         if tag == 'p':
             from docx.text.paragraph import Paragraph
-            para = Paragraph(elem, doc)
-            text = "".join([r.text for r in para.runs]).strip()
-            if not text:
+            para = Paragraph(elem, old_doc)
+            full_text = "".join([r.text for r in para.runs]).strip()
+            if not full_text:
                 continue
+
+            if is_numbered_paragraph(para):
+                # העתק הפסקה הממוספרת כמו שהיא — אל תיגע בכלום
+                import copy
+                if last_was_content and not last_was_numbered:
+                    add_spacing(new_doc)
+                # הוסף לפני sectPr אם קיים, אחרת append
+                body = new_doc.element.body
+                sectPr = body.find(qn('w:sectPr'))
+                if sectPr is not None:
+                    sectPr.addprevious(copy.deepcopy(para._element))
+                else:
+                    body.append(copy.deepcopy(para._element))
+                last_was_content = True
+                last_was_numbered = True
+                continue
+
+            if last_was_content:
+                add_spacing(new_doc)
+
             if is_bullet_paragraph(para):
-                convert_bullet_to_dash(para)
+                clean = full_text.lstrip('•·-– \t')
+                runs = para.runs
+                bold = runs[0].bold if runs else False
+                italic = runs[0].italic if runs else False
+                underline = runs[0].underline if runs else False
+                p = make_paragraph(new_doc)
+                add_run(p, f"{clean} {BULLET_CHAR}", bold=bold, italic=italic, underline=underline)
             else:
-                set_paragraph_rtl(para, in_table=False)
-            set_paragraph_spacing(para)
-            process_runs_in_paragraph(para)
-            new_body_elements.append(('para', elem))
+                segments = [{'text': r.text, 'bold': r.bold, 'italic': r.italic, 'underline': r.underline} for r in para.runs if r.text]
+                p = make_paragraph(new_doc)
+                for s in segments:
+                    add_run(p, s['text'], bold=s['bold'], italic=s['italic'], underline=s['underline'])
+
+            last_was_content = True
+            last_was_numbered = False
 
         elif tag == 'tbl':
             from docx.table import Table
-            table = Table(elem, doc)
-            for row in table.rows:
-                for cell in row.cells:
-                    for para in cell.paragraphs:
-                        set_paragraph_rtl(para, in_table=True)
-                        set_paragraph_spacing(para)
-                        process_runs_in_paragraph(para)
-            new_body_elements.append(('table', elem))
-
-        else:
-            new_body_elements.append(('other', elem))
-
-    for child in list(body):
-        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-        if tag in ('p', 'tbl'):
-            body.remove(child)
-
-    last_was_content = False
-    for kind, elem in new_body_elements:
-        if kind in ('para', 'table'):
             if last_was_content:
-                body.append(create_spacing_paragraph(doc))
-            body.append(elem)
+                add_spacing(new_doc)
+            old_table = Table(elem, old_doc)
+            new_table = new_doc.add_table(rows=len(old_table.rows), cols=len(old_table.columns))
+            new_table.style = 'Table Grid'
+            for r_idx, row in enumerate(old_table.rows):
+                for c_idx, cell in enumerate(row.cells):
+                    cell_text = cell.text.strip()
+                    new_cell = new_table.cell(r_idx, c_idx)
+                    cp = new_cell.paragraphs[0]
+                    cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    if cell_text:
+                        add_run(cp, cell_text)
             last_was_content = True
-        else:
-            body.append(elem)
 
     output = io.BytesIO()
-    doc.save(output)
+    new_doc.save(output)
     output.seek(0)
     return output.read()
 
