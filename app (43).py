@@ -8,7 +8,7 @@ import io
 
 FONT_HEBREW = "David"
 FONT_ENGLISH = "Times New Roman"
-FONT_SIZE_HEBREW = 13  # גודל פונט עברית
+FONT_SIZE_HEBREW = 13
 FONT_SIZE_ENGLISH = 11
 FONT_SIZE_SPACING = 11
 BULLET_CHAR = "-"
@@ -39,30 +39,18 @@ def set_run_font(run, text):
         rFonts.set(qn('w:ascii'), FONT_HEBREW)
         rFonts.set(qn('w:hAnsi'), FONT_HEBREW)
         rFonts.set(qn('w:cs'), FONT_HEBREW)
-        sz = rPr.find(qn('w:sz'))
-        if sz is None:
-            sz = OxmlElement('w:sz')
-            rPr.append(sz)
-        sz.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
-        szCs = rPr.find(qn('w:szCs'))
-        if szCs is None:
-            szCs = OxmlElement('w:szCs')
-            rPr.append(szCs)
-        szCs.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
+        sz_val = FONT_SIZE_HEBREW * 2
     else:
         rFonts.set(qn('w:ascii'), FONT_ENGLISH)
         rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
         rFonts.set(qn('w:cs'), FONT_ENGLISH)
-        sz = rPr.find(qn('w:sz'))
-        if sz is None:
-            sz = OxmlElement('w:sz')
-            rPr.append(sz)
-        sz.set(qn('w:val'), str(FONT_SIZE_ENGLISH * 2))
-        szCs = rPr.find(qn('w:szCs'))
-        if szCs is None:
-            szCs = OxmlElement('w:szCs')
-            rPr.append(szCs)
-        szCs.set(qn('w:val'), str(FONT_SIZE_ENGLISH * 2))
+        sz_val = FONT_SIZE_ENGLISH * 2
+    for tag_name in ['w:sz', 'w:szCs']:
+        el = rPr.find(qn(tag_name))
+        if el is None:
+            el = OxmlElement(tag_name)
+            rPr.append(el)
+        el.set(qn('w:val'), str(sz_val))
 
 def get_or_create_pPr(para):
     pPr = para._element.find(qn('w:pPr'))
@@ -73,13 +61,16 @@ def get_or_create_pPr(para):
 
 def set_paragraph_rtl(para, in_table=False):
     pPr = get_or_create_pPr(para)
+    # הסר bidi ו-jc קיימים
     for tag in [qn('w:jc'), qn('w:bidi')]:
         el = pPr.find(tag)
         if el is not None:
             pPr.remove(el)
+    # הוסף bidi
     bidi = OxmlElement('w:bidi')
     bidi.set(qn('w:val'), '1')
     pPr.append(bidi)
+    # הוסף jc
     jc = OxmlElement('w:jc')
     jc.set(qn('w:val'), 'center' if in_table else 'right')
     pPr.append(jc)
@@ -95,6 +86,48 @@ def set_paragraph_spacing(para):
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
 
+def set_all_styles_rtl(doc):
+    """קבע jc=right על כל הסגנונות במסמך כדי שלא ידרסו את הפסקאות"""
+    styles_elem = doc.element.find(qn('w:styles'))
+    if styles_elem is None:
+        return
+    for style in styles_elem.findall(qn('w:style')):
+        pPr = style.find(qn('w:pPr'))
+        if pPr is None:
+            pPr = OxmlElement('w:pPr')
+            style.append(pPr)
+        # עדכן bidi ו-jc בכל סגנון
+        for tag in [qn('w:jc'), qn('w:bidi')]:
+            el = pPr.find(tag)
+            if el is not None:
+                pPr.remove(el)
+        bidi = OxmlElement('w:bidi')
+        bidi.set(qn('w:val'), '1')
+        pPr.append(bidi)
+        jc = OxmlElement('w:jc')
+        jc.set(qn('w:val'), 'right')
+        pPr.append(jc)
+        # עדכן גם rPr של הסגנון לפונט David 13
+        rPr = style.find(qn('w:rPr'))
+        if rPr is None:
+            rPr = OxmlElement('w:rPr')
+            style.append(rPr)
+        for tag in [qn('w:sz'), qn('w:szCs'), qn('w:rFonts')]:
+            el = rPr.find(tag)
+            if el is not None:
+                rPr.remove(el)
+        rFonts = OxmlElement('w:rFonts')
+        rFonts.set(qn('w:ascii'), FONT_HEBREW)
+        rFonts.set(qn('w:hAnsi'), FONT_HEBREW)
+        rFonts.set(qn('w:cs'), FONT_HEBREW)
+        rPr.insert(0, rFonts)
+        sz = OxmlElement('w:sz')
+        sz.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
+        rPr.append(sz)
+        szCs = OxmlElement('w:szCs')
+        szCs.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
+        rPr.append(szCs)
+
 def is_bullet_paragraph(para):
     if para._element.find('.//' + qn('w:numPr')) is not None:
         return True
@@ -108,28 +141,21 @@ def convert_bullet_to_dash(para):
         el = pPr.find(tag)
         if el is not None:
             pPr.remove(el)
-
     runs_props = [{'bold': r.bold, 'italic': r.italic, 'underline': r.underline} for r in para.runs]
     full_text = "".join([r.text for r in para.runs]).lstrip('•·-– \t')
-
     for run in para.runs:
         run.text = ""
-
     if para.runs:
         first_run = para.runs[0]
         first_run.text = f"{BULLET_CHAR} {full_text}"
         props = runs_props[0] if runs_props else {}
-        if props.get('bold'):
-            first_run.bold = True
-        if props.get('italic'):
-            first_run.italic = True
-        if props.get('underline'):
-            first_run.underline = True
+        if props.get('bold'): first_run.bold = True
+        if props.get('italic'): first_run.italic = True
+        if props.get('underline'): first_run.underline = True
         set_run_font(first_run, full_text)
     else:
         new_run = para.add_run(f"{BULLET_CHAR} {full_text}")
         set_run_font(new_run, full_text)
-
     set_paragraph_rtl(para, in_table=False)
 
 def process_runs_in_paragraph(para):
@@ -138,17 +164,13 @@ def process_runs_in_paragraph(para):
             continue
         bold, italic, underline = run.bold, run.italic, run.underline
         set_run_font(run, run.text)
-        if bold:
-            run.bold = True
-        if italic:
-            run.italic = True
-        if underline:
-            run.underline = True
+        if bold: run.bold = True
+        if italic: run.italic = True
+        if underline: run.underline = True
 
 def create_spacing_paragraph(doc):
     p = OxmlElement('w:p')
     pPr = OxmlElement('w:pPr')
-
     rPr_para = OxmlElement('w:rPr')
     rFonts = OxmlElement('w:rFonts')
     rFonts.set(qn('w:ascii'), FONT_HEBREW)
@@ -160,57 +182,26 @@ def create_spacing_paragraph(doc):
         el.set(qn('w:val'), str(val))
         rPr_para.append(el)
     pPr.append(rPr_para)
-
     spacing = OxmlElement('w:spacing')
     spacing.set(qn('w:line'), '240')
     spacing.set(qn('w:lineRule'), 'auto')
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
     pPr.append(spacing)
-
     bidi = OxmlElement('w:bidi')
     bidi.set(qn('w:val'), '1')
     pPr.append(bidi)
-
     jc = OxmlElement('w:jc')
     jc.set(qn('w:val'), 'right')
     pPr.append(jc)
-
     p.append(pPr)
     return p
-
-def set_document_default_font(doc):
-    """כפה David 13 כברירת מחדל ברמת המסמך"""
-    styles = doc.element.find(qn('w:styles'))
-    if styles is None:
-        return
-    for style in styles.findall(qn('w:style')):
-        if style.get(qn('w:styleId')) == 'Normal':
-            rPr = style.find(qn('w:rPr'))
-            if rPr is None:
-                rPr = OxmlElement('w:rPr')
-                style.append(rPr)
-            for tag in [qn('w:sz'), qn('w:szCs'), qn('w:rFonts')]:
-                el = rPr.find(tag)
-                if el is not None:
-                    rPr.remove(el)
-            rFonts = OxmlElement('w:rFonts')
-            rFonts.set(qn('w:ascii'), FONT_HEBREW)
-            rFonts.set(qn('w:hAnsi'), FONT_HEBREW)
-            rFonts.set(qn('w:cs'), FONT_HEBREW)
-            rPr.insert(0, rFonts)
-            sz = OxmlElement('w:sz')
-            sz.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
-            rPr.append(sz)
-            szCs = OxmlElement('w:szCs')
-            szCs.set(qn('w:val'), str(FONT_SIZE_HEBREW * 2))
-            rPr.append(szCs)
-            break
 
 def process_document(input_bytes):
     doc = Document(io.BytesIO(input_bytes))
 
-    set_document_default_font(doc)
+    # קבע RTL על כל הסגנונות — זה מונע דריסה
+    set_all_styles_rtl(doc)
 
     for section in doc.sections:
         section.page_width = PAGE_WIDTH
