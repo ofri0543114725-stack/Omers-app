@@ -72,7 +72,7 @@ def make_paragraph(new_doc, in_table=False):
     if spacing is None:
         spacing = OxmlElement('w:spacing')
         pPr.append(spacing)
-    spacing.set(qn('w:line'), '240')
+    spacing.set(qn('w:line'), '360')
     spacing.set(qn('w:lineRule'), 'auto')
     spacing.set(qn('w:before'), '0')
     spacing.set(qn('w:after'), '0')
