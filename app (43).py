@@ -183,35 +183,62 @@ def process_document(input_bytes):
             full_text = "".join([r.text for r in para.runs]).strip()
             has_drawing = para._element.find('.//' + qn('w:drawing')) is not None
 
-            # אם יש תמונה — שמור את הפסקה כמו שהיא (כולל תמונה)
+            # אם יש תמונה
             if has_drawing:
                 import copy
+                stripped_text = full_text.strip()
+                is_drawing_caption = stripped_text.startswith(("טבלה ", "טבלה", "שרטוט ", "שרטוט", "תרשים ", "תרשים"))
+
                 if last_was_content and not last_was_caption:
                     add_spacing(new_doc)
-                # בדוק אם זו גם כותרת
-                stripped = full_text.strip()
-                is_drawing_caption = stripped.startswith(("טבלה ", "טבלה", "שרטוט ", "שרטוט", "תרשים ", "תרשים"))
-                para_copy = copy.deepcopy(para._element)
-                if is_drawing_caption:
-                    # עצב את ה-runs בפסקה המועתקת
-                    from docx.oxml.ns import qn as qn2
-                    pPr = para_copy.find(qn2('w:pPr'))
-                    if pPr is None:
-                        pPr = OxmlElement('w:pPr')
-                        para_copy.insert(0, pPr)
-                    jc = pPr.find(qn2('w:jc'))
-                    if jc is None:
-                        jc = OxmlElement('w:jc')
-                        pPr.append(jc)
-                    jc.set(qn2('w:val'), 'center')
+
+                if is_drawing_caption and stripped_text:
+                    # כותרת עם keepNext
+                    p_caption = new_doc.add_paragraph()
+                    p_caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    pPr_c = p_caption._element.find(qn('w:pPr'))
+                    if pPr_c is None:
+                        pPr_c = OxmlElement('w:pPr')
+                        p_caption._element.insert(0, pPr_c)
+                    keepNext_c = OxmlElement('w:keepNext')
+                    pPr_c.append(keepNext_c)
+                    jc_c = OxmlElement('w:jc')
+                    jc_c.set(qn('w:val'), 'center')
+                    pPr_c.append(jc_c)
+                    keepNext_c = OxmlElement('w:keepNext')
+                    pPr_c.append(keepNext_c)
+                    spacing_c = OxmlElement('w:spacing')
+                    spacing_c.set(qn('w:line'), '360')
+                    spacing_c.set(qn('w:lineRule'), 'auto')
+                    spacing_c.set(qn('w:before'), '0')
+                    spacing_c.set(qn('w:after'), '360')
+                    pPr_c.append(spacing_c)
+                    for r in para.runs:
+                        if r.text.strip():
+                            add_run(p_caption, r.text, bold=True, underline=True)
+
+                # תמונה עם keepNext (שתישאר עם הכותרת)
+                p_img = OxmlElement('w:p')
+                pPr_img = OxmlElement('w:pPr')
+                keepNext_img = OxmlElement('w:keepNext')
+                pPr_img.append(keepNext_img)
+                jc_img = OxmlElement('w:jc')
+                jc_img.set(qn('w:val'), 'center')
+                pPr_img.append(jc_img)
+                p_img.append(pPr_img)
+                for r in para._element.findall(qn('w:r')):
+                    if r.find('.//' + qn('w:drawing')) is not None:
+                        p_img.append(copy.deepcopy(r))
+
                 body_new = new_doc.element.body
                 sectPr = body_new.find(qn('w:sectPr'))
                 if sectPr is not None:
-                    sectPr.addprevious(para_copy)
+                    sectPr.addprevious(p_img)
                 else:
-                    body_new.append(para_copy)
+                    body_new.append(p_img)
+
                 last_was_content = True
-                last_was_caption = is_drawing_caption
+                last_was_caption = False
                 last_was_numbered = False
                 last_was_bullet = False
                 continue
@@ -291,6 +318,8 @@ def process_document(input_bytes):
                     spacing.set(qn('w:before'), '0')
                     spacing.set(qn('w:after'), '360')  # רווח 1.5 שורה אחרי הכותרת
                     pPr.append(spacing)
+                    keepNext = OxmlElement('w:keepNext')
+                    pPr.append(keepNext)
                     for s in segments:
                         add_run(p, s['text'], bold=True, italic=s['italic'], underline=True)
                     last_was_caption = True
@@ -337,46 +366,61 @@ def process_document(input_bytes):
 def copy_media_to_docx(old_bytes, new_bytes):
     """העתק קבצי מדיה ו-relationships מהמסמך הישן לחדש"""
     import zipfile, re
-    old_zip = zipfile.ZipFile(io.BytesIO(old_bytes))
+
+    with zipfile.ZipFile(io.BytesIO(old_bytes)) as old_zip:
+        old_rels = old_zip.read('word/_rels/document.xml.rels').decode('utf-8')
+        img_rels = re.findall(r'<Relationship[^>]+image[^>]+/>', old_rels)
+        media_files = {f: old_zip.read(f) for f in old_zip.namelist() if f.startswith('word/media/')}
+        old_ct = old_zip.read('[Content_Types].xml').decode('utf-8')
+
+    if not img_rels and not media_files:
+        return new_bytes
+
+    # בנה מיפוי IDs
+    with zipfile.ZipFile(io.BytesIO(new_bytes)) as tmp_zip:
+        new_rels_text = tmp_zip.read('word/_rels/document.xml.rels').decode('utf-8')
+    existing_ids = set(re.findall(r'Id="(rId\d+)"', new_rels_text))
+
+    id_map = {}
+    counter = 100
+    new_img_rels = []
+    for rel in img_rels:
+        while f'rId{counter}' in existing_ids:
+            counter += 1
+        old_id = re.search(r'Id="(rId\d+)"', rel).group(1)
+        new_rel = re.sub(r'Id="rId\d+"', f'Id="rId{counter}"', rel)
+        new_img_rels.append(new_rel)
+        existing_ids.add(f'rId{counter}')
+        id_map[old_id] = f'rId{counter}'
+        counter += 1
+
     new_buf = io.BytesIO()
-    new_zip_in = zipfile.ZipFile(io.BytesIO(new_bytes))
-    new_zip_out = zipfile.ZipFile(new_buf, 'w', zipfile.ZIP_DEFLATED)
+    with zipfile.ZipFile(io.BytesIO(new_bytes)) as new_zip_in:
+        with zipfile.ZipFile(new_buf, 'w', zipfile.ZIP_DEFLATED) as new_zip_out:
+            for item in new_zip_in.infolist():
+                data = new_zip_in.read(item.filename)
+                if item.filename == 'word/document.xml' and id_map:
+                    doc_text = data.decode('utf-8')
+                    for oid, nid in id_map.items():
+                        doc_text = doc_text.replace(f'r:embed="{oid}"', f'r:embed="{nid}"')
+                    data = doc_text.encode('utf-8')
+                elif item.filename == 'word/_rels/document.xml.rels' and new_img_rels:
+                    insert = '\n  '.join(new_img_rels)
+                    data = data.decode('utf-8').replace('</Relationships>', f'  {insert}\n</Relationships>').encode('utf-8')
+                elif item.filename == '[Content_Types].xml' and media_files:
+                    ct_text = data.decode('utf-8')
+                    for t in re.findall(r'<Default[^>]+image[^>]+/>', old_ct):
+                        ext = re.search(r'Extension="([^"]+)"', t)
+                        if ext and ext.group(1) not in ct_text:
+                            ct_text = ct_text.replace('</Types>', f'  {t}\n</Types>')
+                    data = ct_text.encode('utf-8')
+                new_zip_out.writestr(item, data)
+            for fname, fdata in media_files.items():
+                new_zip_out.writestr(fname, fdata)
 
-    # העתק כל הקבצים מהחדש
-    for item in new_zip_in.infolist():
-        data = new_zip_in.read(item.filename)
-        if item.filename == 'word/_rels/document.xml.rels':
-            # הוסף relationships של תמונות מהישן
-            old_rels = old_zip.read('word/_rels/document.xml.rels').decode('utf-8')
-            img_rels = re.findall(r'<Relationship[^>]+image[^>]+/>', old_rels)
-            if img_rels:
-                insert = '\n    '.join(img_rels)
-                data = data.decode('utf-8').replace('</Relationships>', f'  {insert}\n</Relationships>').encode('utf-8')
-        new_zip_out.writestr(item, data)
-
-    # העתק קבצי מדיה מהישן
-    for item in old_zip.infolist():
-        if item.filename.startswith('word/media/'):
-            new_zip_out.writestr(item, old_zip.read(item.filename))
-        elif item.filename == '[Content_Types].xml':
-            # עדכן content types
-            old_ct = old_zip.read(item.filename).decode('utf-8')
-            new_ct = new_zip_in.read(item.filename).decode('utf-8')
-            # הוסף image types שחסרים
-            img_types = re.findall(r'<Default[^>]+image[^>]+/>', old_ct)
-            for t in img_types:
-                ext = re.search(r'Extension="([^"]+)"', t)
-                if ext and ext.group(1) not in new_ct:
-                    new_ct = new_ct.replace('</Types>', f'  {t}\n</Types>')
-            # עדכן את הקובץ החדש
-            for item2 in new_zip_out.filelist[:]:
-                pass  # כבר נכתב
-
-    old_zip.close()
-    new_zip_in.close()
-    new_zip_out.close()
     new_buf.seek(0)
     return new_buf.read()
+
 
 # ============================================================
 # Streamlit UI
