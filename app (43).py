@@ -80,9 +80,9 @@ def _fix_font_only(run):
     if rFonts is None:
         rFonts = OxmlElement('w:rFonts')
         rPr.insert(0, rFonts)
+    # נקה את כל attributes של rFonts ותתחיל מחדש
     for attr in list(rFonts.attrib.keys()):
-        if 'hint' in attr or 'Theme' in attr or 'theme' in attr:
-            del rFonts.attrib[attr]
+        del rFonts.attrib[attr]
     # עברית או ספרות בלבד — David 13
     # אנגלית (עם או בלי ספרות) — Times New Roman 11
     has_latin = any(('a' <= ch.lower() <= 'z') for ch in text)
@@ -267,6 +267,25 @@ def process_document(input_bytes):
                         jc = OxmlElement('w:jc')
                         pPr.append(jc)
                     jc.set(qn('w:val'), 'center')
+
+    # עדכן פונט לכל ה-runs במסמך כולל תיבות טקסט
+    from docx.oxml.ns import qn as qn2
+    for elem in new_doc.element.body.iter():
+        if elem.tag == qn2('w:r'):
+            rPr = elem.find(qn2('w:rPr'))
+            if rPr is not None:
+                rFonts = rPr.find(qn2('w:rFonts'))
+                if rFonts is not None:
+                    # אם יש רק cs אבל חסר ascii — הוסף ascii ו-hAnsi
+                    cs = rFonts.get(qn2('w:cs'))
+                    ascii_f = rFonts.get(qn2('w:ascii'))
+                    if cs and not ascii_f:
+                        rFonts.set(qn2('w:ascii'), cs)
+                        rFonts.set(qn2('w:hAnsi'), cs)
+                    # נקה theme fonts
+                    for attr in list(rFonts.attrib.keys()):
+                        if 'Theme' in attr or 'theme' in attr:
+                            del rFonts.attrib[attr]
 
     output = io.BytesIO()
     new_doc.save(output)
