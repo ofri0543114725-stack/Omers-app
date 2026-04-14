@@ -417,10 +417,11 @@ def process_document(input_bytes):
                 para = Paragraph(elem, doc)
                 text = para.text.strip()
                 has_drawing = elem.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing') is not None
-                is_empty = not text and not has_drawing
+                has_sectPr = elem.find('.//' + qn('w:sectPr')) is not None
+                is_empty = not text and not has_drawing and not has_sectPr
                 if is_empty and prev_empty:
                     to_remove.append(elem)
-                prev_empty = is_empty
+                prev_empty = is_empty and not has_sectPr
             except:
                 prev_empty = False
         else:
@@ -642,9 +643,57 @@ def restore_missing_parts(old_bytes, new_bytes):
     return new_buf.read()
 
 # ============================================================
-st.set_page_config(page_title="עיצוב מסמכים", layout="centered")
-st.title("🖊️ עיצוב מסמך אוטומטי")
+st.set_page_config(page_title="עיצוב על פי עמר", layout="centered")
+
+# CSS לישור ימין
+st.markdown("""
+<style>
+    body, .stApp { direction: rtl; }
+    .stMarkdown, .stText, h1, h2, h3, p, label { text-align: right; direction: rtl; }
+    .stButton button { float: right; }
+    .stDownloadButton button { float: right; }
+    .stFileUploader { direction: rtl; }
+    .stSuccess, .stError, .stSpinner { direction: rtl; text-align: right; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("✏️ עיצוב על פי עמר")
 st.markdown("העלה קובץ Word — המסמך יצא מעוצב לפי תקן החברה.")
+
+# רשימת כללי העיצוב
+with st.expander("📋 כללי העיצוב"):
+    st.markdown("""
+    <div style='direction:rtl; text-align:right'>
+    
+    **פונטים:**
+    - עברית: David גודל 13
+    - אנגלית: Times New Roman גודל 11
+    - מספרים בלבד: David גודל 13
+    
+    **יישור:**
+    - כל הטקסט מיושר ימינה
+    - תוכן טבלאות מיושר למרכז
+    
+    **רווחים:**
+    - רווח בין שורות: 1.5
+    - רווח בין פסקאות: שורה ריקה David 11
+    
+    **כותרות טבלה / שרטוט / איור:**
+    - מודגש + קו תחתון + מיושר למרכז
+    - תמיד מעל הטבלה/שרטוט באותו דף
+    - רווח שורה וחצי בין הכותרת לאיור
+    
+    **רשימות:**
+    - בולטים (•) מומרים לקו (-)
+    - סוף כל שורה: נקודה-פסיק (;) חוץ מהשורה האחרונה שמקבלת נקודה (.)
+    - כנ"ל לרשימות ממוספרות
+    
+    **תמונות:**
+    - תמונות צפות מומרות ל-inline
+    - כותרת תמיד מעל התמונה
+    
+    </div>
+    """, unsafe_allow_html=True)
 
 uploaded = st.file_uploader("בחר קובץ Word", type=["docx"])
 
